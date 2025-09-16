@@ -33,6 +33,16 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 
+	//请求map任务 
+
+
+	// todo 执行map任务
+
+
+	// 报告任务完成状态
+
+
+
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
