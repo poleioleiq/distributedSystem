@@ -21,6 +21,9 @@ func main() {
 	}
 
 	m := mr.MakeCoordinator(os.Args[1:], 10)
+	//参数部分
+	// fmt.Printf("%v\n", os.Args[1:])
+
 	for m.Done() == false {
 		time.Sleep(time.Second)
 	}

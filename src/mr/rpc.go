@@ -9,21 +9,22 @@ package mr
 import "os"
 import "strconv"
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-// RPC请求任务的参数和回复结构体
+type RegistArgs struct{
+	WorkerId int
+}
+type RegistReply struct{
+	OK bool
+	WorkerId int
+}
+
 type RequestTaskArgs struct {
 	WorkerId int
 }
 
-type RequestTaskReply struct {
+type WorkerRequestTask struct {
 	TaskType   string // "map", "reduce", "wait", "done"
 	TaskId     int
 	FileName   string
-	NReduce    int
-	NMap       int
 }
 
 // RPC报告任务完成的参数和回复结构体

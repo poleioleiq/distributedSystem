@@ -4,7 +4,9 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
+import "time"
 
+var globalWorkerId int
 
 //
 // Map functions return a slice of KeyValue.
@@ -31,10 +33,35 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	for i:=0;i<5;i++ {
+		registArgs := RegistArgs{}
+		registReply := RegistReply{}
+		ok := call("Coordinator.Register", &registArgs, &registReply)
+		if ok == true && registReply.OK==true {
+			globalWorkerId = registReply.WorkerId
+			fmt.Println("register success ,workerId:", globalWorkerId )
+			break
+		} else {
+			fmt.Println("register failed")
+			time.Sleep(time.Second * 2)
+		}
+	}
+	time.Sleep(time.Second*10)
+
+	// fmt.Println("====================regist finish=================")
 
 	//请求map任务 
-
+	//初始化请求rpc中的workerid
+	args := RequestTaskArgs{WorkerId: globalWorkerId}
+	reply := []WorkerRequestTask{}
+	//请求coordinator分配任务
+	ok:= call("Coordinator.WorkerRequestTask", &args, &reply)
+	if ok == false {
+		fmt.Printf("RequestTask() call failed\n")
+	}else{
+		fmt.Printf("%v",reply)
+		// fmt.Printf("worker get task %s ,taskID %d ,map num %s, reduce Num %s", reply.TaskId,reply.FileName,reply.NMap,reply.NReduce)	
+	}
 
 	// todo 执行map任务
 
@@ -48,11 +75,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
+
 func CallExample() {
 
 	// declare an argument structure.

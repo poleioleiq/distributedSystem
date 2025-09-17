@@ -8,6 +8,12 @@ import "net/http"
 import "sync/atomic"
 import "fmt"
 
+// 添加全局变量存储files
+var globalFiles []string
+var globalRegisteredWorkerNum int32 = 0
+var globalfilesNum =0
+// var globalRegisteredWorkers[] int
+
 type TaskStatus int
 
 const (
@@ -51,28 +57,6 @@ type ReduceTask struct {
 	Status TaskStatus
 }
 
-// worker方法，用于创建处理任务的协程
-func (c *Coordinator) worker(workerId int) {
-	// 根据workerId分配任务
-	// 如果workerId小于mapTaskNum，则处理对应的map任务
-	if workerId < len(c.mapTask) {
-		// 这里应该实现具体的map任务处理逻辑
-		// 例如：读取文件、执行map函数、生成中间文件等
-		// 由于这是一个简化实现，我们只打印信息
-		fmt.Printf("Worker %d processing map task %d: %s\n", workerId, workerId, c.mapTask[workerId].FileName)
-		// 处理完成后更新任务状态
-		c.mapTask[workerId].Status = MapTaskStatus_Finished
-		atomic.AddInt32(&c.remainMapTaskNum, -1)
-	} else if workerId < len(c.mapTask)+len(c.reduceTask) {
-		// 处理reduce任务
-		reduceId := workerId - len(c.mapTask)
-		fmt.Printf("Worker %d processing reduce task %d\n", workerId, reduceId)
-		// 处理完成后更新任务状态
-		c.reduceTask[reduceId].Status = ReduceTaskStatus_Finished
-		atomic.AddInt32(&c.remainReduceTaskNum, -1)
-	}
-}
-
 // Your code here -- RPC handlers for the worker to call.
 
 //
@@ -84,6 +68,38 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
+
+//返回任务
+func (c *Coordinator) WorkerRequestTask(args *RequestTaskArgs, reply *[]WorkerRequestTask) error { 
+	//打印参数
+	// fmt.Printf("workerRequestTask() args: %v\n", args)
+	// fmt.Printf("files: %v\n", globalFiles)
+	//将任务分配给worker，即将所有的files随机分配给worker,globalFiles为文件列表，1-globalRegisteredWorkerNum为所有worker的id
+	for i := 0; i < len(globalFiles); i++ { 
+		
+		//文件总数对worker数量取模，获得所有这个worker的files
+		if i % int(globalRegisteredWorkerNum) == (args.WorkerId-1) {
+			workerRequestTask:=WorkerRequestTask{}
+			workerRequestTask.FileName = globalFiles[i]
+			workerRequestTask.TaskId = i
+			workerRequestTask.TaskType = "map"
+			*reply = append(*reply, workerRequestTask)
+		}
+	}
+	return nil;
+}
+
+func (c *Coordinator) Register(args *RegistArgs, reply *RegistReply) error { 
+	//统计worker数量：如果有心跳请求rpc，则将coordiantor的gloabalworkernum++
+
+	atomic.AddInt32(&globalRegisteredWorkerNum, 1)
+	reply.OK = true
+	reply.WorkerId = int(atomic.LoadInt32(&globalRegisteredWorkerNum))
+	fmt.Println("globalRegisteredWorkerNum:", atomic.LoadInt32(&globalRegisteredWorkerNum))
+	return nil;
+
+}
+
 
 
 //
@@ -108,8 +124,6 @@ func (c *Coordinator) server() {
 //
 func (c *Coordinator) Done() bool {
 	ret := false
-
-	// Your code here.
 	// 需要两个状态，map任务结束，reduce任务结束，
 	// 即map结束任务数量等于map任务数量，reduce结束任务数量等于reduce任务数量
 	//原子检查remainMapTasknum和remainReduceTasknum是否都为零，如果都为零则返回true
@@ -124,9 +138,11 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	globalFiles=files
+	globalfilesNum:=len(files)
+	fmt.Println("filesNum:",globalfilesNum)
 	c := Coordinator{}
 
-	// Your code here.
 	// 初始化任务分片数目，初始化剩余map数、map任务状态、
 	// 剩余reduce数、reduce任务状态
 	c.mapTaskNum = len(files)
@@ -148,10 +164,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.reduceTask[i].Status=ReduceTaskStatus_Idle
 	}
 	
-	//创建nredeuce+len(files)个worker协程
-	for i:=0;i<nReduce+len(files);i++{
-		go c.worker(i)
-	}
 
 
 	c.server()
