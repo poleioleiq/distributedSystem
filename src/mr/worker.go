@@ -5,8 +5,19 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 import "time"
+import "os"
+import "io/ioutil"
+import "sort"
+import "strconv"
 
 var globalWorkerId int
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // Map functions return a slice of KeyValue.
@@ -50,8 +61,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// fmt.Println("====================regist finish=================")
 
-	//请求map任务 
-	//初始化请求rpc中的workerid
+	//请求map任务 ，初始化请求rpc中的workerid
 	args := RequestTaskArgs{WorkerId: globalWorkerId}
 	reply := []WorkerRequestTask{}
 	//请求coordinator分配任务
@@ -60,8 +70,12 @@ func Worker(mapf func(string, string) []KeyValue,
 		fmt.Printf("RequestTask() call failed\n")
 	}else{
 		fmt.Printf("%v",reply)
-		// fmt.Printf("worker get task %s ,taskID %d ,map num %s, reduce Num %s", reply.TaskId,reply.FileName,reply.NMap,reply.NReduce)	
 	}
+	//启动多个协程，读取所有文件，每个协程计算每个文件中的kv，最后再聚合
+	compute(reply,mapf,reducef)
+
+
+
 
 	// todo 执行map任务
 
@@ -69,12 +83,58 @@ func Worker(mapf func(string, string) []KeyValue,
 	// 报告任务完成状态
 
 
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
 }
+func compute(reply []WorkerRequestTask,mapf func(string, string) []KeyValue,reducef func(string, []string) string){
+	intermediate := []KeyValue{}
+	for _, R := range reply {
+		file, err := os.Open(R.FileName)
+		if err != nil {
+			log.Fatalf("cannot open %v", R.FileName)
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", R.FileName)
+		}
+		file.Close()
+		kva := mapf(R.FileName, string(content))
+		intermediate = append(intermediate, kva...)
+	}
 
+	//
+	// a big difference from real MapReduce is that all the
+	// intermediate data is in one place, intermediate[],
+	// rather than being partitioned into NxM buckets.
+	//
+
+	sort.Sort(ByKey(intermediate))
+
+	oname := "mrr-out-"+strconv.Itoa(globalWorkerId)
+	ofile, _ := os.Create(oname)
+
+	//
+	// call Reduce on each distinct key in intermediate[],
+	// and print the result to mr-out-0.
+	//
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
+}
 
 func CallExample() {
 
