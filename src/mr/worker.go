@@ -9,6 +9,8 @@ import "os"
 import "io/ioutil"
 import "sort"
 import "strconv"
+import "sync"
+import "path/filepath"
 
 var globalWorkerId int
 // for sorting by key.
@@ -72,7 +74,19 @@ func Worker(mapf func(string, string) []KeyValue,
 		fmt.Printf("%v",reply)
 	}
 	//启动多个协程，读取所有文件，每个协程计算每个文件中的kv，最后再聚合
-	compute(reply,mapf,reducef)
+	var wg sync.WaitGroup
+	for i := 0; i < len(reply); i++ {
+		wg.Add(1)
+		go func(task WorkerRequestTask) {
+			defer wg.Done()
+			fmt.Printf("workerId = %v,task = %v\n",globalWorkerId,task)
+			compute(task, mapf, reducef)
+		}(reply[i])
+	}
+	wg.Wait()
+	time.Sleep(time.Second * 10)
+
+
 
 
 
@@ -84,21 +98,21 @@ func Worker(mapf func(string, string) []KeyValue,
 
 
 }
-func compute(reply []WorkerRequestTask,mapf func(string, string) []KeyValue,reducef func(string, []string) string){
+func compute(R WorkerRequestTask,mapf func(string, string) []KeyValue,reducef func(string, []string) string){
 	intermediate := []KeyValue{}
-	for _, R := range reply {
-		file, err := os.Open(R.FileName)
-		if err != nil {
-			log.Fatalf("cannot open %v", R.FileName)
-		}
-		content, err := ioutil.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", R.FileName)
-		}
-		file.Close()
-		kva := mapf(R.FileName, string(content))
-		intermediate = append(intermediate, kva...)
+	// for _, R := range reply {
+	file, err := os.Open(R.FileName)
+	if err != nil {
+		log.Fatalf("cannot open %v", R.FileName)
 	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", R.FileName)
+	}
+	file.Close()
+	kva := mapf(R.FileName, string(content))
+	intermediate = append(intermediate, kva...)
+	// }
 
 	//
 	// a big difference from real MapReduce is that all the
@@ -107,9 +121,12 @@ func compute(reply []WorkerRequestTask,mapf func(string, string) []KeyValue,redu
 	//
 
 	sort.Sort(ByKey(intermediate))
-
-	oname := "mrr-out-"+strconv.Itoa(globalWorkerId)
-	ofile, _ := os.Create(oname)
+	baseFileName := filepath.Base(R.FileName)
+	oname := "mrr-out-"+strconv.Itoa(globalWorkerId)+ "-" +  baseFileName
+	ofile, err := os.Create(oname)
+	if err != nil {
+		log.Fatalf("Cannot create output file %s: %v", oname, err)
+	}
 
 	//
 	// call Reduce on each distinct key in intermediate[],
