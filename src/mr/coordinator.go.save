@@ -44,8 +44,6 @@ type Coordinator struct {
 	remainMapTaskNum int32 
 	remainReduceTaskNum int32
 	
-	freeWorkers map[int]bool // WorkerId -> 是否可用
-
 }
 
 type MapTask struct {
@@ -86,17 +84,17 @@ func (c *Coordinator) WorkerRequestTask(args *RequestTaskArgs, reply *[]WorkerRe
 	for i := 0; i < len(globalFiles); i++ { 
 		
 		//文件总数对worker数量取模，获得所有这个worker的files
-		if (i % int(globalRegisteredWorkerNum) == (args.WorkerId-1) && c.freeWorkers[args.WorkerId]== true) {
+		if i % int(globalRegisteredWorkerNum) == (args.WorkerId-1) {
 			workerRequestTask:=WorkerRequestTask{}
 			workerRequestTask.FileName = globalFiles[i]
 			workerRequestTask.TaskId = i
 			workerRequestTask.TaskType = "map"
 			//更改c.mapTasks中的对应task的状态
 			c.mapTask[i] = MapTask{FileName: globalFiles[i], Status: MapTaskStatus_Running, TaskId: i}
+			c.freeWorkers[args.WorkerId]=false
 			*reply = append(*reply, workerRequestTask)
 		}
 	}
-	c.freeWorkers[args.WorkerId]= false
 	return nil;
 }
 
@@ -113,7 +111,13 @@ func (c *Coordinator) Register(args *RegistArgs, reply *RegistReply) error {
 
 }
 
-func (c *Coordinator) GetStatusFromWorker(args *ReportTaskDoneArgs, reply *ReportTaskDoneReply) error { 
+func (c 
+
+
+
+
+
+*Coordinator) GetStatusFromWorker(args *ReportTaskDoneArgs, reply *ReportTaskDoneReply) error { 
 	//获取worker状态
 	TaskId := args.TaskId
 	switch args.TaskType {
@@ -121,7 +125,6 @@ func (c *Coordinator) GetStatusFromWorker(args *ReportTaskDoneArgs, reply *Repor
 		c.mapTask[TaskId].Status = MapTaskStatus_Finished
 		c.freeWorkers[args.WorkerId]=true
 		atomic.AddInt32(&c.remainMapTaskNum, -1)
-		//fmt.Printf("%v",c.remainMapTaskNum)
 	case "reduce":
 		c.reduceTask[TaskId].Status =ReduceTaskStatus_Finished
 		c.freeWorkers[args.WorkerId]=true
@@ -159,8 +162,7 @@ func (c *Coordinator) Done() bool {
 	// 即map结束任务数量等于map任务数量，reduce结束任务数量等于reduce任务数量
 	//原子检查remainMapTasknum和remainReduceTasknum是否都为零，如果都为零则返回true
 	//否则返回false
-	//ret = atomic.CompareAndSwapInt32(&c.remainMapTaskNum, 0, 0) && atomic.CompareAndSwapInt32(&c.remainReduceTaskNum, 0, 0)
-	ret = atomic.CompareAndSwapInt32(&c.remainMapTaskNum, 0, 0)
+	ret = atomic.CompareAndSwapInt32(&c.remainMapTaskNum, 0, 0) && atomic.CompareAndSwapInt32(&c.remainReduceTaskNum, 0, 0)
 	return ret
 }
 
@@ -173,9 +175,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	globalFiles=files
 	globalfilesNum:=len(files)
 	fmt.Println("filesNum:",globalfilesNum)
-	c := Coordinator{
-		freeWorkers: make(map[int]bool),
-	}
+	c := Coordinator{}
+	freeWorkers := make(map[int]bool)
+
+
 	// 初始化任务分片数目，初始化剩余map数、map任务状态、
 	// 剩余reduce数、reduce任务状态
 	c.mapTaskNum = len(files)

@@ -10,7 +10,7 @@ import "io/ioutil"
 import "sort"
 import "strconv"
 import "sync"
-import "path/filepath"
+// import "path/filepath"
 
 var globalWorkerId int
 // for sorting by key.
@@ -63,76 +63,81 @@ func Worker(mapf func(string, string) []KeyValue,
 	time.Sleep(time.Second*3)
 
 	// fmt.Println("====================regist finish=================")
+	
 	ch := make(chan []KeyValue, 100000) // 使用缓冲channel避免阻塞
-
-	//请求map任务 ，初始化请求rpc中的workerid
-	args := RequestTaskArgs{WorkerId: globalWorkerId}
-	reply := []WorkerRequestTask{}
-	//请求coordinator分配任务
-	ok := call("Coordinator.WorkerRequestTask", &args, &reply)
-	if ok == false {
-		fmt.Printf("RequestTask() call failed\n")
-	} else {
-		fmt.Printf("%v", reply)
-	}
-	//启动多个协程，读取所有文件，每个协程计算每个文件中的kv，最后再聚合
-	var wg sync.WaitGroup
-	for i := 0; i < len(reply); i++ {
-		wg.Add(1)
-		go func(task WorkerRequestTask) {
-			defer wg.Done()
-			fmt.Printf("workerId = %v,task = %v\n",globalWorkerId,task)
-			compute(task, mapf, reducef, ch)
-		}(reply[i])
-	}
-	
-	wg.Wait()
-	close(ch)
-
-
-	// time.Sleep(time.Second * 10)
-
-	// 收集所有中间结果
-	var intermediate []KeyValue
-	for kv := range ch {
-		intermediate = append(intermediate, kv...)
-		// fmt.Printf("%v",intermediate)
-	}
-	
-	sort.Sort(ByKey(intermediate))
-	oname := "mr-out-" + strconv.Itoa(globalWorkerId)
-	ofile, err := os.Create(oname)
-	if err != nil {
-		log.Fatalf("Cannot create output file %s: %v", oname, err)
-	}
-	
-	i := 0
-	for i < len(intermediate) {
-		j := i + 1
-		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-			j++
+	// for ;;{
+		//请求map任务 ，初始化请求rpc中的workerid
+		args := RequestTaskArgs{WorkerId: globalWorkerId}
+		reply := []WorkerRequestTask{}
+		//请求coordinator分配任务
+		ok := call("Coordinator.WorkerRequestTask", &args, &reply)
+		if ok == false {
+			fmt.Printf("RequestTask() call failed\n")
+		} else {
+			fmt.Printf("%v", reply)
 		}
-		values := []string{}
-		for k := i; k < j; k++ {
-			values = append(values, intermediate[k].Value)
+		//启动多个协程，读取所有文件，每个协程计算每个文件中的kv，最后再聚合
+		var wg sync.WaitGroup
+		for i := 0; i < len(reply); i++ {
+			wg.Add(1)
+			go func(task WorkerRequestTask) {
+				defer wg.Done()
+				fmt.Printf("workerId = %v,task = %v\n",globalWorkerId,task)
+				compute(task, mapf, reducef, ch)
+			}(reply[i])
 		}
-		output := reducef(intermediate[i].Key, values)
+		wg.Wait()
+		close(ch)
 
-		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+		// 收集所有中间结果
+		var intermediate []KeyValue
+		for kv := range ch {
+			intermediate = append(intermediate, kv...)
+		}
+		
+		sort.Sort(ByKey(intermediate))
+		oname := "mr-out-" + strconv.Itoa(globalWorkerId)
+		ofile, err := os.Create(oname)
+		if err != nil {
+			log.Fatalf("Cannot create output file %s: %v", oname, err)
+		}
+		
+		i := 0
+		for i < len(intermediate) {
+			j := i + 1
+			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+				j++
+			}
+			values := []string{}
+			for k := i; k < j; k++ {
+				values = append(values, intermediate[k].Value)
+			}
+			output := reducef(intermediate[i].Key, values)
 
-		i = j
-	}
+			fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
 
-	ofile.Close()
-	// 所有任务完成，不需要额外睡眠
+			i = j
+		}
 
+		ofile.Close()
 
-
-
-
-
-	// todo 执行map任务
-
+		
+		// RPC: 报告任务完成状态
+		for R := 0; R < len(reply); R++ {  // 修正1: 使用 len(reply) 和正确的循环变量
+			reportArgs := ReportTaskDoneArgs{
+				TaskId:   reply[R].TaskId,     // 修正2: 使用 reply[R].TaskId
+				TaskType: reply[R].TaskType,   // 修正3: 使用 reply[R].TaskType
+				WorkerId: globalWorkerId,
+			}
+			reportReply := ReportTaskDoneReply{}
+			ok_GetStatusFromWorker := call("Coordinator.GetStatusFromWorker", &reportArgs, &reportReply)
+			if ok_GetStatusFromWorker && reportReply.OK {
+				fmt.Printf("Coordinator acknowledged task %s-%d completion\n", reportArgs.TaskType, reportArgs.TaskId)
+			} else {
+				fmt.Printf("Failed to report task %s-%d status to Coordinator\n", reportArgs.TaskType, reportArgs.TaskId)
+			}
+		}
+	// }
 
 	// 报告任务完成状态
 
@@ -162,41 +167,7 @@ func compute(R WorkerRequestTask,mapf func(string, string) []KeyValue,reducef fu
 	//创建一个channel传递intermediate到一个合并goruntine进行sort
 
 	sort.Sort(ByKey(intermediate))
-	baseFileName := filepath.Base(R.FileName)
-	oname := "mrr-out-"+strconv.Itoa(globalWorkerId)+ "-" +  baseFileName
-	ofile, err := os.Create(oname)
-	if err != nil {
-		log.Fatalf("Cannot create output file %s: %v", oname, err)
-	}
-
 	ch <- intermediate
-
-	//
-	// call Reduce on each distinct key in intermediate[],
-	// and print the result to mr-out-0.
-	//
-	i := 0
-	for i < len(intermediate) {
-		j := i + 1
-		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-			j++
-		}
-		values := []string{}
-		for k := i; k < j; k++ {
-			values = append(values, intermediate[k].Value)
-		}
-		output := reducef(intermediate[i].Key, values)
-		//创建一个channel传递intermediate[i].Key/output到一个合并goruntine进行sort
-		// ch <- KeyValue{intermediate[i].Key, output}
-
-
-		// this is the correct format for each line of Reduce output.
-		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
-		i = j
-	}
-
-	ofile.Close()
 }
 
 func CallExample() {
