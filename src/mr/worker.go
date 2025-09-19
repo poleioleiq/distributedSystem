@@ -29,6 +29,7 @@ type KeyValue struct {
 	Value string
 }
 
+
 //
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -59,19 +60,20 @@ func Worker(mapf func(string, string) []KeyValue,
 			time.Sleep(time.Second * 2)
 		}
 	}
-	time.Sleep(time.Second*10)
+	time.Sleep(time.Second*3)
 
 	// fmt.Println("====================regist finish=================")
+	ch := make(chan []KeyValue, 100000) // 使用缓冲channel避免阻塞
 
 	//请求map任务 ，初始化请求rpc中的workerid
 	args := RequestTaskArgs{WorkerId: globalWorkerId}
 	reply := []WorkerRequestTask{}
 	//请求coordinator分配任务
-	ok:= call("Coordinator.WorkerRequestTask", &args, &reply)
+	ok := call("Coordinator.WorkerRequestTask", &args, &reply)
 	if ok == false {
 		fmt.Printf("RequestTask() call failed\n")
-	}else{
-		fmt.Printf("%v",reply)
+	} else {
+		fmt.Printf("%v", reply)
 	}
 	//启动多个协程，读取所有文件，每个协程计算每个文件中的kv，最后再聚合
 	var wg sync.WaitGroup
@@ -80,11 +82,49 @@ func Worker(mapf func(string, string) []KeyValue,
 		go func(task WorkerRequestTask) {
 			defer wg.Done()
 			fmt.Printf("workerId = %v,task = %v\n",globalWorkerId,task)
-			compute(task, mapf, reducef)
+			compute(task, mapf, reducef, ch)
 		}(reply[i])
 	}
+	
 	wg.Wait()
-	time.Sleep(time.Second * 10)
+	close(ch)
+
+
+	// time.Sleep(time.Second * 10)
+
+	// 收集所有中间结果
+	var intermediate []KeyValue
+	for kv := range ch {
+		intermediate = append(intermediate, kv...)
+		// fmt.Printf("%v",intermediate)
+	}
+	
+	sort.Sort(ByKey(intermediate))
+	oname := "mr-out-" + strconv.Itoa(globalWorkerId)
+	ofile, err := os.Create(oname)
+	if err != nil {
+		log.Fatalf("Cannot create output file %s: %v", oname, err)
+	}
+	
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
+	// 所有任务完成，不需要额外睡眠
 
 
 
@@ -98,7 +138,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 
 }
-func compute(R WorkerRequestTask,mapf func(string, string) []KeyValue,reducef func(string, []string) string){
+func compute(R WorkerRequestTask,mapf func(string, string) []KeyValue,reducef func(string, []string) string, ch chan<- []KeyValue){
 	intermediate := []KeyValue{}
 	// for _, R := range reply {
 	file, err := os.Open(R.FileName)
@@ -119,6 +159,7 @@ func compute(R WorkerRequestTask,mapf func(string, string) []KeyValue,reducef fu
 	// intermediate data is in one place, intermediate[],
 	// rather than being partitioned into NxM buckets.
 	//
+	//创建一个channel传递intermediate到一个合并goruntine进行sort
 
 	sort.Sort(ByKey(intermediate))
 	baseFileName := filepath.Base(R.FileName)
@@ -127,6 +168,8 @@ func compute(R WorkerRequestTask,mapf func(string, string) []KeyValue,reducef fu
 	if err != nil {
 		log.Fatalf("Cannot create output file %s: %v", oname, err)
 	}
+
+	ch <- intermediate
 
 	//
 	// call Reduce on each distinct key in intermediate[],
@@ -143,6 +186,9 @@ func compute(R WorkerRequestTask,mapf func(string, string) []KeyValue,reducef fu
 			values = append(values, intermediate[k].Value)
 		}
 		output := reducef(intermediate[i].Key, values)
+		//创建一个channel传递intermediate[i].Key/output到一个合并goruntine进行sort
+		// ch <- KeyValue{intermediate[i].Key, output}
+
 
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
